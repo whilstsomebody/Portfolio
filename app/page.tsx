@@ -8,15 +8,15 @@ type Branch = { id: string; label: string; detail: string; side: "left" | "right
 type SectionConfig = { id: string; title: string; eyebrow: string; intro: string; nodeY: number; branches: Branch[] };
 
 const mainPoints = [
-  { x: 190, y: 480 }, { x: 1010, y: 500 }, { x: 500, y: 790 },
-  { x: 180, y: 155 }, { x: 1040, y: 260 }, { x: 600, y: 130 }, { x: 820, y: 820 },
+  { x: 230, y: 455 }, { x: 960, y: 455 }, { x: 960, y: 760 },
+  { x: 230, y: 760 }, { x: 230, y: 145 }, { x: 850, y: 145 }, { x: 600, y: 810 },
 ];
 const branchOffsets: Record<string, Array<{ x: number; y: number; side: "left" | "right" }>> = {
-  systems: [{x:-235,y:-115,side:"left"},{x:235,y:-110,side:"right"},{x:-255,y:115,side:"left"},{x:255,y:110,side:"right"}],
-  about: [{x:-190,y:-55,side:"left"},{x:190,y:-55,side:"right"},{x:0,y:120,side:"right"}],
-  experience: [{x:-155,y:-85,side:"left"},{x:155,y:-85,side:"right"},{x:-155,y:85,side:"left"}],
-  projects: [{x:-190,y:-120,side:"left"},{x:205,y:-10,side:"right"},{x:-185,y:110,side:"left"}],
-  profiles: [{x:-195,y:-135,side:"left"},{x:195,y:-135,side:"right"},{x:-235,y:-45,side:"left"},{x:235,y:-45,side:"right"},{x:-195,y:65,side:"left"},{x:195,y:65,side:"right"}],
+  systems: [{x:-125,y:-92,side:"left"},{x:125,y:-92,side:"right"},{x:-125,y:92,side:"left"},{x:125,y:92,side:"right"}],
+  about: [{x:-125,y:-80,side:"left"},{x:125,y:-80,side:"right"},{x:0,y:125,side:"right"}],
+  experience: [{x:-125,y:-88,side:"left"},{x:125,y:-88,side:"right"},{x:-125,y:88,side:"left"}],
+  projects: [{x:-125,y:-90,side:"left"},{x:125,y:-90,side:"right"},{x:-125,y:90,side:"left"}],
+  profiles: [{x:-130,y:-145,side:"left"},{x:130,y:-145,side:"right"},{x:-145,y:-65,side:"left"},{x:145,y:-65,side:"right"},{x:-130,y:15,side:"left"},{x:130,y:15,side:"right"}],
 };
 
 const sections: SectionConfig[] = [
@@ -50,7 +50,14 @@ export default function Home() {
   useEffect(() => { gsap.registerPlugin(ScrollTrigger); reduced.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches; const ctx = gsap.context(() => { sections.forEach((section, index) => ScrollTrigger.create({ trigger: `#${section.id}`, start: "top 55%", end: "bottom 55%", onEnter: () => setActive(index), onEnterBack: () => setActive(index) })); ScrollTrigger.create({ trigger: "#route", start: "top top", end: "bottom bottom", onUpdate: (self) => { if (!traveler.current) return; const scaled = self.progress * (mainPoints.length - 1); const segment = Math.min(Math.floor(scaled), mainPoints.length - 2); const path = routeRefs.current[segment]; if (path) { const point = path.getPointAtLength(path.getTotalLength() * (scaled - segment)); gsap.set(traveler.current, { attr: { cx: point.x, cy: point.y } }); gsap.set(graphInner.current, { x: 270 - point.x, y: 450 - point.y }); } } }); }); return () => ctx.revert(); }, []);
   const syncRail = (index: number) => { const section = sections[index]; const rail = rails.current[section.id]; if (!rail) return; const buttons = Array.from(rail.querySelectorAll<HTMLButtonElement>("[data-branch]")); if (!buttons.length) return; const middle = rail.scrollLeft + rail.clientWidth / 2; const closest = buttons.reduce((winner, button) => Math.abs(button.offsetLeft + button.offsetWidth / 2 - middle) < Math.abs(winner.offsetLeft + winner.offsetWidth / 2 - middle) ? button : winner, buttons[0]); const branch = section.branches.find((item) => item.id === closest.dataset.branch); if (branch) selectBranch(index, branch); };
   const graph = useMemo(() => <svg className="topology" viewBox="0 0 1200 900" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Interactive portfolio topology graph"><g ref={graphInner}>
-    {sections.slice(0, -1).map((section, index) => { const a = mainPoints[index]; const b = mainPoints[index + 1]; const dx = b.x - a.x; const curve = index % 2 === 0 ? -145 : 145; return <path key={section.id} ref={(element) => { if (element) routeRefs.current[index] = element; }} d={`M ${a.x} ${a.y} C ${a.x + dx * .32} ${a.y + curve}, ${b.x - dx * .32} ${b.y - curve}, ${b.x} ${b.y}`} className={`route-edge ${index < active ? "is-complete" : ""}`} />; })}
+    {sections.slice(0, -1).map((section, index) => { const a = mainPoints[index]; const b = mainPoints[index + 1]; const routes = [
+      `M ${a.x} ${a.y} C 430 385, 760 385, ${b.x} ${b.y}`,
+      `M ${a.x} ${a.y} C 1050 530, 1050 685, ${b.x} ${b.y}`,
+      `M ${a.x} ${a.y} C 760 850, 430 850, ${b.x} ${b.y}`,
+      `M ${a.x} ${a.y} C 145 600, 145 320, ${b.x} ${b.y}`,
+      `M ${a.x} ${a.y} C 410 58, 670 58, ${b.x} ${b.y}`,
+      `M ${a.x} ${a.y} C 700 300, 500 600, ${b.x} ${b.y}`,
+    ]; return <path key={section.id} ref={(element) => { if (element) routeRefs.current[index] = element; }} d={routes[index]} className={`route-edge ${index < active ? "is-complete" : ""}`} />; })}
     {sections.flatMap((section, index) => section.branches.map((branch, branchIndex) => { const parent = mainPoints[index]; const offset = branchOffsets[section.id]?.[branchIndex] ?? { x: 0, y: 100, side: branch.side }; const point = { x: parent.x + offset.x, y: parent.y + offset.y }; const chosen = selected[section.id] === branch.id; const outward = offset.side === "left" ? -1 : 1; const labelX = point.x + outward * 31; return <g key={branch.id}><path d={`M ${parent.x} ${parent.y} C ${parent.x + offset.x * .35} ${parent.y + offset.y * .15}, ${point.x - outward * 60} ${point.y}, ${point.x - outward * 20} ${point.y}`} className={`branch-edge ${chosen ? "is-selected" : ""}`} /><g className={`graph-node branch-node ${chosen ? "is-selected" : ""}`} tabIndex={0} role="button" aria-label={`Open ${branch.label} details`} onClick={() => selectBranch(index, { ...branch, ...point }, true)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectBranch(index, { ...branch, ...point }, true); } }}><circle cx={point.x} cy={point.y} r="20" /><circle className="core" cx={point.x} cy={point.y} r="3" /><text className="branch-label" x={labelX} y={point.y + 4} textAnchor={offset.side === "left" ? "end" : "start"}>{branch.label}</text></g></g>; }))}
     {sections.map((section, index) => { const point = mainPoints[index]; return <g key={section.id} className={`graph-node main-node ${index === active ? "is-active" : ""}`} tabIndex={0} role="button" aria-label={`Navigate to ${section.id}`} onClick={() => selectMain(index)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectMain(index); } }}><circle cx={point.x} cy={point.y} r="24" /><circle cx={point.x} cy={point.y} r="17" className="inner" /><circle className="core" cx={point.x} cy={point.y} r="4" /><text className="main-label" x={point.x + 36} y={point.y + 4} textAnchor="start">{section.id.toUpperCase()}</text></g>; })}
     <circle ref={traveler} className="traveler" cx={mainPoints[0].x} cy={mainPoints[0].y} r="5" />
