@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { Mail, Phone } from "lucide-react";
@@ -9,6 +9,8 @@ import { ResumePortal } from "@/components/resume-portal";
 type Branch = { id: string; label: string; detail: string; description?: string; stack?: string; skills?: Array<{ label: string; items: string }>; role?: string; company?: string; date?: string; workProduct?: string; href?: string; hideAction?: boolean; side: "left" | "right"; x: number; y: number };
 type SectionConfig = { id: string; title: string; eyebrow: string; intro: string; nodeY: number; branches: Branch[] };
 type ResumePhase = "closed" | "opening" | "open" | "closing";
+type Point = { x: number; y: number };
+type Geometry = { nodes: Point[]; branches: Record<string, Point>; bends: Record<string, Point> };
 
 const mainPoints = [
   { x: 690, y: 120 }, { x: 930, y: 465 }, { x: 390, y: 810 },
@@ -62,11 +64,64 @@ export default function Home() {
   const [selected, setSelected] = useState<Record<string, string>>({});
   const [resumePhase, setResumePhase] = useState<ResumePhase>("closed");
   const [resumeOrigin, setResumeOrigin] = useState({ x: 0, y: 0 });
+  const [geometry, setGeometry] = useState<Geometry>(() => ({
+    nodes: mainPoints.map((point) => ({ ...point })),
+    branches: Object.fromEntries(sections.flatMap((section, index) => section.branches.map((branch) => [branch.id, getBranchPoint(index, branch.id)]))),
+    bends: {},
+  }));
+  const geometryRef = useRef(geometry);
+  geometryRef.current = geometry;
+  const drag = useRef<{ key: string; kind: 'node' | 'branch' | 'bend'; start: Point; initial: Point; startClient: Point; moved: boolean } | null>(null);
+  const suppressClick = useRef(false);
+  const refreshGeometry = useRef<(() => void) | null>(null);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const resumeButton = useRef<HTMLButtonElement>(null);
   const graphInner = useRef<SVGGElement>(null); const routeRefs = useRef<SVGPathElement[]>([]); const rails = useRef<Record<string, HTMLDivElement | null>>({}); const reduced = useRef(false);
-  const moveCamera = (index: number, branch?: Branch) => { const point = branch ? getBranchPoint(index, branch.id) : mainPoints[index]; if (graphInner.current) gsap.to(graphInner.current, { attr: { transform: `translate(${760 - point.x} ${450 - point.y})` }, duration: reduced.current ? 0 : .65, ease: "power3.out", overwrite: true }); };
+  const moveCamera = (index: number, branch?: Branch) => { const point = branch ? geometryRef.current.branches[branch.id] : geometryRef.current.nodes[index]; if (graphInner.current) gsap.to(graphInner.current, { attr: { transform: `translate(${760 - point.x} ${450 - point.y})` }, duration: reduced.current ? 0 : .65, ease: "power3.out", overwrite: true }); };
+  const graphPoint = (event: ReactPointerEvent<SVGElement>) => {
+    const matrix = graphInner.current?.getScreenCTM();
+    if (!matrix) return null;
+    return new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
+  };
+  const startDrag = (event: ReactPointerEvent<SVGElement>, kind: 'node' | 'branch' | 'bend', key: string) => {
+    if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    const point = graphPoint(event);
+    if (!point) return;
+    const current = geometryRef.current;
+    const initial = kind === 'node' ? current.nodes[Number(key)] : kind === 'branch' ? current.branches[key] : current.bends[key] ?? { x: 0, y: 0 };
+    if (graphInner.current) gsap.killTweensOf(graphInner.current);
+    drag.current = { kind, key, initial: { ...initial }, start: point, startClient: { x: event.clientX, y: event.clientY }, moved: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.stopPropagation();
+  };
+  const moveDrag = (event: ReactPointerEvent<SVGElement>) => {
+    const current = drag.current;
+    if (!current) return;
+    if (!current.moved && Math.hypot(event.clientX - current.startClient.x, event.clientY - current.startClient.y) < 4) return;
+    current.moved = true;
+    const point = graphPoint(event);
+    if (!point) return;
+    const target = { x: current.initial.x + point.x - current.start.x, y: current.initial.y + point.y - current.start.y };
+    setGeometry((previous) => {
+      const next = { nodes: [...previous.nodes], branches: { ...previous.branches }, bends: { ...previous.bends } };
+      if (current.kind === 'node') next.nodes[Number(current.key)] = target;
+      else if (current.kind === 'branch') next.branches[current.key] = target;
+      else next.bends[current.key] = target;
+      geometryRef.current = next;
+      return next;
+    });
+    event.preventDefault();
+  };
+  const endDrag = (event: ReactPointerEvent<SVGElement>) => {
+    if (!drag.current) return;
+    if (drag.current.moved) {
+      suppressClick.current = true;
+      window.setTimeout(() => { suppressClick.current = false; }, 0);
+    }
+    drag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
   const selectMain = (index: number) => { const sectionId = sections[index].id; selectedRef.current = { ...selectedRef.current, [sectionId]: "" }; setActive(index); setSelected((old) => ({ ...old, [sectionId]: "" })); document.getElementById(sectionId)?.scrollIntoView({ behavior: reduced.current ? "auto" : "smooth", block: "start" }); };
   const selectBranch = (index: number, branch: Branch, navigate = false) => { const section = sections[index]; selectedRef.current = { ...selectedRef.current, [section.id]: branch.id }; setActive(index); setSelected((old) => ({ ...old, [section.id]: branch.id })); if (navigate) document.getElementById(section.id)?.scrollIntoView({ behavior: reduced.current ? "auto" : "smooth", block: "start" }); moveCamera(index, branch); };
   const openResume = () => {
@@ -83,7 +138,7 @@ export default function Home() {
   useEffect(() => {
     gsap.registerPlugin(ScrollTrigger);
     reduced.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const updateGraph = () => {
+    const updateGraph = (recenter = true) => {
       const scrollY = window.scrollY;
       const sectionTops = sections.map((section) => {
         const element = document.getElementById(section.id);
@@ -106,9 +161,9 @@ export default function Home() {
       setActive((previous) => previous === currentNode ? previous : currentNode);
       graphInner.current?.querySelectorAll(".main-node").forEach((node, index) => node.classList.toggle("is-active", index === currentNode));
       const path = routeRefs.current[routeSegment];
-      let cameraPoint = mainPoints[routeSegment];
+      let cameraPoint = geometryRef.current.nodes[routeSegment];
       if (path && !atEnd) cameraPoint = path.getPointAtLength(path.getTotalLength() * routeFraction);
-      if (atEnd) cameraPoint = mainPoints[mainPoints.length - 1];
+      if (atEnd) cameraPoint = geometryRef.current.nodes[mainPoints.length - 1];
       routeRefs.current.forEach((edge, index) => {
         const complete = atEnd || index < routeSegment;
         const current = !atEnd && index === routeSegment;
@@ -126,20 +181,22 @@ export default function Home() {
         edge.style.stroke = "var(--green)";
         edge.style.visibility = progress > 0 ? "visible" : "hidden";
       });
-      graphInner.current?.setAttribute("transform", `translate(${760 - cameraPoint.x} ${450 - cameraPoint.y})`);
+      if (recenter && !drag.current) graphInner.current?.setAttribute("transform", `translate(${760 - cameraPoint.x} ${450 - cameraPoint.y})`);
     };
+    refreshGeometry.current = () => updateGraph(false);
     const ctx = gsap.context(() => {
-      ScrollTrigger.create({ trigger: "#route", start: "top top", end: "bottom bottom", onUpdate: updateGraph, onRefresh: updateGraph });
+      ScrollTrigger.create({ trigger: "#route", start: "top top", end: "bottom bottom", onUpdate: () => updateGraph(), onRefresh: () => updateGraph() });
     });
     updateGraph();
-    return () => ctx.revert();
+    return () => { refreshGeometry.current = null; ctx.revert(); };
   }, []);
+  useLayoutEffect(() => { refreshGeometry.current?.(); }, [geometry]);
   const syncRail = (index: number) => { const section = sections[index]; const rail = rails.current[section.id]; if (!rail) return; const buttons = Array.from(rail.querySelectorAll<HTMLButtonElement>("[data-branch]")); if (!buttons.length) return; const middle = rail.scrollLeft + rail.clientWidth / 2; const closest = buttons.reduce((winner, button) => Math.abs(button.offsetLeft + button.offsetWidth / 2 - middle) < Math.abs(winner.offsetLeft + winner.offsetWidth / 2 - middle) ? button : winner, buttons[0]); const branch = section.branches.find((item) => item.id === closest.dataset.branch); if (branch && selectedRef.current[section.id] !== branch.id) selectBranch(index, branch); };
   const graph = useMemo(() => <svg className="topology" viewBox="0 0 1200 900" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Interactive portfolio topology graph"><g ref={graphInner}>
-    {sections.slice(0, -1).map((section, index) => { const a = mainPoints[index]; const b = mainPoints[index + 1]; const dx = b.x - a.x; const dy = b.y - a.y; const d = `M ${a.x} ${a.y} C ${a.x + dx * .42} ${a.y + dy * .48}, ${b.x - dx * .42} ${b.y - dy * .48}, ${b.x} ${b.y}`; return <g key={section.id}><path d={d} className="route-underlay" /><path ref={(element) => { if (element) routeRefs.current[index] = element; }} d={d} className="route-edge" /></g>; })}
-    {sections.flatMap((section, index) => section.branches.map((branch, branchIndex) => { const parent = mainPoints[index]; const offset = branchOffsets[section.id]?.[branchIndex] ?? { x: 0, y: 100, side: branch.side }; const point = getBranchPoint(index, branch.id); const chosen = index === active && selected[section.id] === branch.id; const outward = offset.side === "left" ? -1 : 1; const labelX = point.x + outward * 31; return <g key={branch.id}><path d={`M ${parent.x} ${parent.y} C ${parent.x + offset.x * .35} ${parent.y + offset.y * .15}, ${point.x - outward * 60} ${point.y}, ${point.x - outward * 20} ${point.y}`} className={`branch-edge ${chosen ? "is-selected" : ""}`} /><g className={`graph-node branch-node ${chosen ? "is-selected" : ""}`} tabIndex={0} role="button" aria-label={`Open ${branch.label} details`} onClick={() => selectBranch(index, branch, true)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectBranch(index, branch, true); } }}><circle cx={point.x} cy={point.y} r="20" /><circle className="core" cx={point.x} cy={point.y} r="3" /><text className="branch-label" x={labelX} y={point.y + 4} textAnchor={offset.side === "left" ? "end" : "start"}>{branch.label}</text></g></g>; }))}
-    {sections.map((section, index) => { const point = mainPoints[index]; return <g key={section.id} className={`graph-node main-node ${index === active ? "is-active" : ""}`} tabIndex={0} role="button" aria-label={`Navigate to ${section.id}`} onClick={() => selectMain(index)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectMain(index); } }}><circle cx={point.x} cy={point.y} r="24" /><circle cx={point.x} cy={point.y} r="17" className="inner" /><circle className="core" cx={point.x} cy={point.y} r="4" /><text className="main-label" x={point.x + 36} y={point.y + 4} textAnchor="start">{section.id.toUpperCase()}</text></g>; })}
-  </g></svg>, [selected, active]);
+    {sections.slice(0, -1).map((section, index) => { const a = geometry.nodes[index]; const b = geometry.nodes[index + 1]; const dx = b.x - a.x; const dy = b.y - a.y; const bend = geometry.bends[`route-${index}`] ?? { x: 0, y: 0 }; const d = `M ${a.x} ${a.y} C ${a.x + dx * .42 + bend.x * 4 / 3} ${a.y + dy * .48 + bend.y * 4 / 3}, ${b.x - dx * .42 + bend.x * 4 / 3} ${b.y - dy * .48 + bend.y * 4 / 3}, ${b.x} ${b.y}`; return <g key={section.id}><path d={d} className="route-underlay" /><path ref={(element) => { if (element) routeRefs.current[index] = element; }} d={d} className="route-edge" /><path d={d} className="graph-edge-hit" aria-label={`Drag route from ${section.id} to ${sections[index + 1].id}`} onPointerDown={(event) => startDrag(event, 'bend', `route-${index}`)} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} /></g>; })}
+    {sections.flatMap((section, index) => section.branches.map((branch, branchIndex) => { const parent = geometry.nodes[index]; const offset = branchOffsets[section.id]?.[branchIndex] ?? { x: 0, y: 100, side: branch.side }; const point = geometry.branches[branch.id]; const chosen = index === active && selected[section.id] === branch.id; const outward = offset.side === "left" ? -1 : 1; const labelX = point.x + outward * 31; const bend = geometry.bends[`branch-${branch.id}`] ?? { x: 0, y: 0 }; const d = `M ${parent.x} ${parent.y} C ${parent.x + (point.x - parent.x) * .35 + bend.x * 4 / 3} ${parent.y + (point.y - parent.y) * .15 + bend.y * 4 / 3}, ${point.x - outward * 60 + bend.x * 4 / 3} ${point.y + bend.y * 4 / 3}, ${point.x - outward * 20} ${point.y}`; return <g key={branch.id}><path d={d} className={`branch-edge ${chosen ? "is-selected" : ""}`} /><path d={d} className="graph-edge-hit" aria-label={`Drag ${branch.label} branch edge`} onPointerDown={(event) => startDrag(event, 'bend', `branch-${branch.id}`)} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} /><g className={`graph-node branch-node ${chosen ? "is-selected" : ""}`} tabIndex={0} role="button" aria-label={`Open ${branch.label} details`} onPointerDown={(event) => startDrag(event, 'branch', branch.id)} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} onClick={() => { if (!suppressClick.current) selectBranch(index, branch, true); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectBranch(index, branch, true); } }}><circle cx={point.x} cy={point.y} r="20" /><circle className="core" cx={point.x} cy={point.y} r="3" /><text className="branch-label" x={labelX} y={point.y + 4} textAnchor={offset.side === "left" ? "end" : "start"}>{branch.label}</text></g></g>; }))}
+    {sections.map((section, index) => { const point = geometry.nodes[index]; return <g key={section.id} className={`graph-node main-node ${index === active ? "is-active" : ""}`} tabIndex={0} role="button" aria-label={`Navigate to ${section.id}`} onPointerDown={(event) => startDrag(event, 'node', String(index))} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} onClick={() => { if (!suppressClick.current) selectMain(index); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectMain(index); } }}><circle cx={point.x} cy={point.y} r="24" /><circle cx={point.x} cy={point.y} r="17" className="inner" /><circle className="core" cx={point.x} cy={point.y} r="4" /><text className="main-label" x={point.x + 36} y={point.y + 4} textAnchor="start">{section.id.toUpperCase()}</text></g>; })}
+  </g></svg>, [selected, active, geometry]);
   return (
     <main id="route">
       <div className="scan-grid" aria-hidden="true" />
