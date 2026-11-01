@@ -49,6 +49,12 @@ float fbm(vec2 p) {
   }
   return result;
 }
+vec3 funnelSlice(vec2 p, float depth) {
+  vec2 center = vec2(mix(origin.x, mouth.x, depth), mix(origin.y, mouth.y, depth * depth * (3.0 - 2.0 * depth)));
+  float width = 4.0 + radius * pow(depth, 1.85);
+  vec2 local = (p - center) / vec2(max(0.5, width * facing), width);
+  return vec3(length(local), local.y, depth);
+}
 void main() {
   vec2 p = vec2(gl_FragCoord.x, resolution.y - gl_FragCoord.y) / resolution * viewport;
   vec2 delta = p - pointer.xy;
@@ -66,25 +72,38 @@ void main() {
     wakeLight += abs(wave) * 0.07;
   }
   vec2 samplePoint = p + displacement;
-  // The throat stays pinned to the launch button even as the aperture turns.
-  vec2 frontal = (samplePoint - origin) / max(radius, 1.0);
-  float depth = length(frontal);
-  float travel = mix((samplePoint.x - origin.x) / max(1.0, mouth.x - origin.x), depth, facing);
+  // One connected volume made from overlapping cross-sections of the
+  // original flask. Turning widens their projection, never blends two bodies.
+  vec2 apertureSize = max(vec2(radius * mix(0.24, 1.0, facing), radius), vec2(0.01));
+  float sideTravel = clamp((samplePoint.x - origin.x) / max(1.0, mouth.x - origin.x), 0.0, 1.0);
+  vec3 slice = funnelSlice(samplePoint, sideTravel);
+  float silhouette = slice.x;
+  float weight = exp(-min(slice.x * slice.x, 40.0) * 3.0);
+  float totalWeight = weight;
+  vec2 coordinates = slice.yz * weight;
+  for (int i = 0; i <= 40; i++) {
+    vec3 crossSection = funnelSlice(samplePoint, float(i) / 40.0);
+    silhouette = min(silhouette, crossSection.x);
+    float contribution = exp(-min(crossSection.x * crossSection.x, 40.0) * 3.0);
+    coordinates += crossSection.yz * contribution;
+    totalWeight += contribution;
+  }
+  coordinates /= max(totalWeight, 0.000001);
+  float travel = coordinates.y;
   float t = clamp(travel, 0.0, 1.0);
-  float center = mix(origin.y, mouth.y, t * t * (3.0 - 2.0 * t));
   float width = 4.0 + radius * pow(t, 1.85);
-  float v = mix((samplePoint.y - center) / width, sin(atan(frontal.y, frontal.x) * 5.0 + depth * 12.0 - time * .4) * .65, facing);
+  float v = coordinates.x;
   float alive = smoothstep(0.0, 0.045, progress);
 
   vec2 field = vec2(t * 5.0 - time * 0.21, v * 1.7);
   float curl = fbm(field + vec2(0, time * 0.07));
   float cloud = fbm(field * 2.2 + vec2(curl * 2.4, curl - time * 0.09));
   float detail = fbm(field * 5.0 + vec2(curl * 3.0, -time * 0.12));
-  float boundary = abs(v) + (curl - 0.5) * 0.19;
+  float boundary = silhouette + (curl - 0.5) * 0.19;
   float volume = 1.0 - smoothstep(0.73, 1.13, boundary);
   float front = travel + (cloud - 0.5) * 0.075 * t;
   float reveal = 1.0 - smoothstep(progress - 0.07, progress + 0.025, front);
-  volume *= smoothstep(-0.012, 0.0, travel) * (1.0 - smoothstep(1.0, 1.055, travel)) * reveal * alive;
+  volume *= reveal * alive;
 
   // Curled, uninterrupted threads embedded in broad layers of luminous gas.
   float filament = pow(0.5 + 0.5 * sin(v * 22.0 + t * 13.0 - time * 1.35 + curl * 9.0), 12.0);
@@ -107,9 +126,8 @@ void main() {
   float charge = (electricity + influence * 0.16 + wakeLight + mouthCharge) * volume;
 
   float atmosphere = exp(-v * v * 1.6) * 0.17 * reveal * alive;
-  atmosphere *= smoothstep(0.0, 0.12, travel) * (1.0 - smoothstep(1.0, 1.08, travel));
+  atmosphere *= (1.0 - smoothstep(1.0, 1.2, silhouette));
 
-  vec2 apertureSize = vec2(radius * mix(0.24, 1.0, facing), radius);
   vec2 ellipse = (p - mouth) / apertureSize;
   float ringDistance = length(ellipse);
   float angle = atan(ellipse.y, ellipse.x);
@@ -356,9 +374,12 @@ export function ResumePortal({ origin, progress, panel, pose }: PortalProps) {
       const amount = progress.current.value;
       const turn = pose.current.turn;
       const expansion = pose.current.expand;
-      const bounds = panel.current?.getBoundingClientRect();
-      const sideX = Math.max(source.x + 100, bounds ? bounds.left + 10 : width * .68);
-      const sideY = bounds ? bounds.top + bounds.height / 2 : height / 2;
+      // The resting mouth must not chase the animated PDF bounds. Doing so
+      // feeds the resize back into the turn and makes the aperture wobble.
+      const restingWidth = Math.min(Math.max(360, width * .3), 520, width - 32);
+      const restingRight = Math.min(48, Math.max(16, width * .03));
+      const sideX = Math.max(source.x + 100, width - restingRight - restingWidth + 10);
+      const sideY = height / 2;
       const centerX = width / 2, centerY = height / 2;
       mouthX = sideX * (1 - turn) + (source.x + (centerX - source.x) * amount) * turn;
       mouthY = sideY * (1 - turn) + (source.y + (centerY - source.y) * amount) * turn;
@@ -397,7 +418,8 @@ export function ResumePortal({ origin, progress, panel, pose }: PortalProps) {
           for (let i = 0; i < 28; i++) {
             const r = radius * (i + 1) / 28;
             context.beginPath();
-            context.ellipse(mouthX, mouthY, r, r, 0, 0, Math.PI * 2);
+            const depth = (i + 1) / 28;
+            context.ellipse(source.x + (mouthX - source.x) * depth, source.y + (mouthY - source.y) * depth, r, r, 0, 0, Math.PI * 2);
             context.strokeStyle = `rgba(88,229,156,${amount * (.12 + i / 60)})`;
             context.lineWidth = i === 27 ? 6 : 2;
             context.shadowColor = '#58e59c'; context.shadowBlur = 14;

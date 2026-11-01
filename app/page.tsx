@@ -235,12 +235,11 @@ function ResumeOverlay({ phase, origin, onOpenComplete, onClose, onCloseComplete
     expanded.current = opening;
     setIsFullscreen(opening);
     const duration = reducedMotion.current ? 0 : 1.25;
-    gsap.set(panel, { top: current.top, left: current.left, right: 'auto', width: current.width, height: current.height, maxWidth: 'none', minHeight: 0, transform: 'none' });
+    gsap.set(panel, { top: current.top, left: current.left, right: 'auto', width: current.width, height: current.height, maxWidth: 'none', minHeight: 0, transform: 'none', opacity: 1 });
     const timeline = gsap.timeline();
     expansionTimeline.current = timeline;
     timeline.to(portalPose.current, { turn: opening ? 1 : 0, expand: opening ? 1 : 0, duration, ease: 'power2.inOut' })
       .to(panel, { left: opening ? 0 : target.left, top: opening ? 0 : target.top, width: opening ? window.innerWidth : target.width, height: opening ? window.innerHeight : target.height, borderRadius: opening ? 0 : 12, duration, ease: 'power2.inOut' }, 0)
-      .fromTo(panel, { opacity: .15 }, { opacity: 1, duration: duration * .5 }, duration * .5)
       .call(() => {
         if (!opening) {
           gsap.set(panel, { clearProps: 'left,top,right,width,height,maxWidth,minHeight,transform,borderRadius,opacity' });
