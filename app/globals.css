@@ -18,6 +18,45 @@
 .route-edge { visibility:hidden; transition:none; pointer-events:none; }
 .graph-stage,.topology,.content-layer,.branch-edge { pointer-events:none; }.graph-node { pointer-events:all; cursor:grab; touch-action:none; user-select:none; }.graph-node:active,.graph-edge-hit:active { cursor:grabbing; }.graph-edge-hit { fill:none; stroke:transparent; stroke-width:18; vector-effect:non-scaling-stroke; pointer-events:stroke; cursor:grab; touch-action:none; }.section-content { pointer-events:none; }.section-content button,.section-content a,.section-content .branch-rail { pointer-events:auto; }
 .graph-node circle { transition:fill .3s ease,stroke .3s ease,stroke-width .3s ease,filter .3s ease; }
+/* Ambient motion wraps the scroll camera so every surface travels together. */
+.graph-placement { transform:translateX(24px); }
+.graph-float { animation:graph-float 8s ease-in-out infinite; }
+@keyframes graph-float { 0%,100% { transform:translateY(-7px); } 50% { transform:translateY(7px); } }
+@media (max-width:720px) { .graph-placement { transform:none; } .graph-float { animation-name:graph-float-mobile; } }
+@keyframes graph-float-mobile { 0%,100% { transform:translateY(-4px); } 50% { transform:translateY(4px); } }
+@media (prefers-reduced-motion:reduce) { .graph-float { animation:none; transform:none; } }
+/* Oblique metal housings: elliptical faces above substantial front sidewalls. */
+.node-hit { fill:transparent; stroke:none; pointer-events:all; }
+.node-body,.node-body * { pointer-events:none; }
+.node-ground-shadow { fill:url(#node-shadow); }
+.node-sidewall { fill:url(#node-metal-side); stroke:#111e17; stroke-width:.7; }
+.node-base-rim { fill:none; stroke:#020704; stroke-width:2.4; }
+.node-side-groove { fill:none; stroke:#0c3822; stroke-width:.85; }
+.node-top-rim { fill:url(#node-metal-top); stroke:#7b9684; stroke-width:.65; }
+.node-bezel-inset { fill:url(#node-bezel-inset); stroke:#0a1b10; stroke-width:.6; }
+.node-glass { fill:url(#node-glass); }
+.node-rim-glint { fill:none; stroke:#e5f3e8; stroke-width:1.1; stroke-linecap:round; opacity:.8; }
+.node-glass-reflection { fill:none; stroke:#cce7d4; stroke-width:3; opacity:.18; }
+.node-status-ring { fill:none; stroke:#47775b; stroke-width:.7; }
+.node-core-aura { fill:url(#node-aura); opacity:0; }
+.node-lens-core { fill:url(#node-core); }
+.node-core-specular { fill:#eefff6; opacity:.7; }
+.graph-node:is(.is-active,.is-selected) .node-glass { fill:url(#node-glass-lit); }
+.graph-node:is(.is-active,.is-selected) .node-status-ring { stroke:var(--green); filter:drop-shadow(0 0 3px rgba(88,229,156,.65)); }
+.graph-node:is(.is-active,.is-selected) .node-lens-core { fill:url(#node-core-lit); filter:drop-shadow(0 0 4px var(--green)); }
+.graph-node:is(.is-active,.is-selected) .node-side-groove { stroke:#237849; }
+.graph-node:is(.is-active,.is-selected) .node-core-aura { opacity:1; animation:lens-breathe 3.8s ease-in-out infinite; }
+@keyframes lens-breathe { 0%,100% { opacity:.6; } 50% { opacity:1; } }
+@media (prefers-reduced-motion:reduce) { .graph-node:is(.is-active,.is-selected) .node-core-aura { animation:none; } }
+.cable-body,.cable-body * { pointer-events:none; }
+.cable-shadow,.branch-underlay,.cable-channel { fill:none; vector-effect:none; pointer-events:none; stroke-linecap:round; }
+.cable-shadow { stroke:#020604; stroke-width:11; filter:drop-shadow(4px 8px 4px rgba(0,0,0,.95)); }
+.route-underlay,.branch-underlay { stroke:#577d63; stroke-width:9; stroke-linecap:round; vector-effect:none; }
+.cable-channel { stroke:#0b2417; stroke-opacity:.65; stroke-width:6; }
+.route-edge,.branch-edge { vector-effect:none; }
+.branch-edge { stroke:transparent; }
+.branch-edge.is-selected { stroke:var(--green); }
+.route-edge,.route-edge.is-complete,.route-edge.is-traveling,.branch-edge.is-selected { stroke-width:6; }
 .intro-emphasis { display:inline-block; color:var(--green); font-weight:700; text-shadow:0 0 5px rgba(88,229,156,.18); animation:intro-breathe 2.8s ease-in-out infinite; }
 @keyframes intro-breathe { 0%,100% { color:#58e59c; text-shadow:0 0 3px rgba(88,229,156,.18); } 50% { color:#8dffc0; text-shadow:0 0 12px rgba(88,229,156,.76); } }
 @media (prefers-reduced-motion:reduce) { .intro-emphasis { animation:none; } }

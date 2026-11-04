@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { Mail, Phone } from "lucide-react";
@@ -59,6 +59,113 @@ const getBranchPoint = (sectionIndex: number, branchId: string) => {
   return { x: parent.x + offset.x, y: parent.y + offset.y };
 };
 
+// An oblique cylinder: the elliptical top and extruded front wall are separate
+// surfaces. Keep every surface in one translated group so dragging is rigid.
+function GraphNodeBody({ point, main = false }: { point: Point; main?: boolean }) {
+  const r = main ? 38 : 27;
+  const ry = r * .66;
+  const top = -6;
+  const bottom = top + (main ? 20 : 15);
+  return <>
+    <ellipse className="node-hit" cx={point.x} cy={point.y + 3} rx={r + 3} ry={ry + 12} />
+    <g className="node-body" transform={`translate(${point.x} ${point.y})`} aria-hidden="true">
+      <ellipse className="node-ground-shadow" cx="3" cy={bottom + 9} rx={r * 1.35} ry={ry * 1.1} />
+      <path className="node-sidewall" d={`M ${-r} ${top} L ${-r} ${bottom} A ${r} ${ry} 0 0 0 ${r} ${bottom} L ${r} ${top} Z`} />
+      <path className="node-base-rim" d={`M ${-r} ${bottom - 2} A ${r} ${ry} 0 0 0 ${r} ${bottom - 2}`} />
+      <path className="node-side-groove" d={`M ${-r} ${bottom - 6} A ${r} ${ry} 0 0 0 ${r} ${bottom - 6}`} />
+      <ellipse className="node-top-rim" cy={top} rx={r} ry={ry} />
+      <ellipse className="node-bezel-inset" cy={top} rx={r - 3.5} ry={ry - 2.3} />
+      <ellipse className="node-glass" cy={top} rx={r - 6} ry={ry - 4} />
+      <path className="node-rim-glint" d={`M ${-r + 2} ${top - 1} A ${r - 2} ${ry - 1.5} 0 0 1 ${r * .45} ${top - ry * .86}`} />
+      <path className="node-glass-reflection" d={`M ${-r + 8} ${top - 1} A ${r - 8} ${ry - 5} 0 0 1 ${-r * .12} ${top - ry + 5}`} />
+      <ellipse className="node-status-ring" cy={top} rx={r - 5} ry={ry - 3.5} />
+      <ellipse className="node-core-aura" cy={top} rx={r * .55} ry={ry * .55} />
+      <ellipse className="node-lens-core" cy={top} rx={main ? 4 : 3} ry={main ? 2.8 : 2.2} />
+      <ellipse className="node-core-specular" cx="-.8" cy={top - .7} rx="1.2" ry=".8" />
+    </g>
+  </>;
+}
+
+function CableSocket({ points, center, main, end = false }: { points: Point[]; center: Point; main: boolean; end?: boolean }) {
+  const [a, b, c, d] = points;
+  const at = (t: number) => {
+    const u = 1 - t;
+    return { x: u ** 3 * a.x + 3 * u ** 2 * t * b.x + 3 * u * t ** 2 * c.x + t ** 3 * d.x, y: u ** 3 * a.y + 3 * u ** 2 * t * b.y + 3 * u * t ** 2 * c.y + t ** 3 * d.y };
+  };
+  const radius = main ? 38 : 27;
+  const inside = (t: number) => {
+    const point = at(end ? 1 - t : t);
+    const x = point.x - center.x;
+    const y = point.y - center.y;
+    const capY = y < -6 ? -6 : y > (main ? 14 : 9) ? (main ? 14 : 9) : y;
+    return (x / radius) ** 2 + ((y - capY) / (radius * .66)) ** 2 <= 1;
+  };
+  // Find the cable's first exit from the housing, including after reshaping.
+  // Using the curve itself keeps the plug aligned even with a sharp bend.
+  let low = 0;
+  let high = .025;
+  while (high < 1 && inside(high)) { low = high; high = Math.min(1, high + .025); }
+  if (inside(high)) return null;
+  for (let i = 0; i < 16; i++) {
+    const middle = (low + high) / 2;
+    if (inside(middle)) low = middle; else high = middle;
+  }
+  const t = end ? 1 - high : high;
+  const point = at(t);
+  const u = 1 - t;
+  const sign = end ? -1 : 1;
+  const dx = sign * (u * u * (b.x - a.x) + 2 * u * t * (c.x - b.x) + t * t * (d.x - c.x));
+  const dy = sign * (u * u * (b.y - a.y) + 2 * u * t * (c.y - b.y) + t * t * (d.y - c.y));
+  return <g className="cable-socket" transform={`translate(${point.x} ${point.y}) rotate(${Math.atan2(dy, dx) * 180 / Math.PI})`}>
+    <rect x="-3" y="-6.6" width="11" height="13.2" rx="2" fill="url(#cable-collar)" stroke="#526b5b" strokeWidth=".6" />
+    <path d="M 0 -6.1 V 6.1 M 3 -6.1 V 6.1" stroke="#06130b" strokeWidth=".8" opacity=".8" />
+    <ellipse cx="8" rx="2.5" ry="6.3" fill="#152c1d" stroke="#749681" strokeWidth=".6" />
+    <ellipse cx="8.5" rx="1.8" ry="4.5" fill="#0a1710" />
+  </g>;
+}
+
+function GraphCableBody({ d, points, main = false, endNode = points[3], selected = false, routeRef }: { d: string; points: Point[]; main?: boolean; endNode?: Point; selected?: boolean; routeRef?: (element: SVGPathElement | null) => void }) {
+  const materialId = useId();
+  // Explicit bounds also cover perfectly horizontal/vertical cables. A filter
+  // using objectBoundingBox would disappear when either dimension reaches zero.
+  const left = Math.min(...points.map((point) => point.x)) - 24;
+  const top = Math.min(...points.map((point) => point.y)) - 24;
+  const width = Math.max(...points.map((point) => point.x)) - left + 24;
+  const height = Math.max(...points.map((point) => point.y)) - top + 24;
+  return <g className="cable-body" aria-hidden="true">
+    <defs>
+      <filter id={materialId} filterUnits="userSpaceOnUse" x={left} y={top} width={width} height={height} colorInterpolationFilters="sRGB">
+        <feGaussianBlur in="SourceAlpha" stdDeviation="1.5" result="round-surface" />
+        <feDiffuseLighting in="round-surface" surfaceScale="5" diffuseConstant=".8" lightingColor="#a1baa9" result="metal-shade">
+          <feDistantLight azimuth="235" elevation="38" />
+        </feDiffuseLighting>
+        <feComposite in="metal-shade" in2="SourceAlpha" operator="in" result="body" />
+        <feSpecularLighting in="round-surface" surfaceScale="5" specularConstant="1.1" specularExponent="22" lightingColor="#edfff2" result="metal-reflection">
+          <feDistantLight azimuth="235" elevation="38" />
+        </feSpecularLighting>
+        <feComposite in="metal-reflection" in2="SourceAlpha" operator="in" result="reflection" />
+        <feComposite in="body" in2="reflection" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" />
+      </filter>
+      <filter id={`${materialId}-light`} filterUnits="userSpaceOnUse" x={left} y={top} width={width} height={height} colorInterpolationFilters="sRGB">
+        <feGaussianBlur in="SourceAlpha" stdDeviation="1.1" result="light-volume" />
+        <feFlood floodColor="var(--green)" />
+        <feComposite in2="light-volume" operator="in" result="green-volume" />
+        <feSpecularLighting in="light-volume" surfaceScale="2.5" specularConstant=".5" specularExponent="12" lightingColor="#baffd8" result="inner-reflection">
+          <feDistantLight azimuth="235" elevation="38" />
+        </feSpecularLighting>
+        <feComposite in="inner-reflection" in2="light-volume" operator="in" result="reflection" />
+        <feComposite in="green-volume" in2="reflection" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" />
+      </filter>
+    </defs>
+    <path d={d} className="cable-shadow" />
+    <path d={d} className={main ? "route-underlay" : "branch-underlay"} filter={`url(#${materialId})`} style={{ vectorEffect: "none", strokeWidth: 9 }} />
+    <path d={d} className="cable-channel" />
+    <CableSocket points={points} center={points[0]} main />
+    <CableSocket points={points} center={endNode} main={main} end />
+    <path ref={routeRef} d={d} className={main ? "route-edge" : `branch-edge ${selected ? "is-selected" : ""}`} style={{ filter: `url(#${materialId}-light)`, vectorEffect: "none", strokeWidth: 6 }} />
+  </g>;
+}
+
 export default function Home() {
   const [active, setActive] = useState(0);
   const [selected, setSelected] = useState<Record<string, string>>({});
@@ -71,12 +178,13 @@ export default function Home() {
   }));
   const geometryRef = useRef(geometry);
   geometryRef.current = geometry;
-  const drag = useRef<{ key: string; kind: 'node' | 'branch' | 'bend'; start: Point; initial: Point; startClient: Point; moved: boolean } | null>(null);
+  const drag = useRef<{ key: string; kind: 'node' | 'branch' | 'bend'; start: Point; initial: Point; startClient: Point; moved: boolean; pointerId: number; target: SVGElement } | null>(null);
   const suppressClick = useRef(false);
   const refreshGeometry = useRef<(() => void) | null>(null);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const resumeButton = useRef<HTMLButtonElement>(null);
+  const graphFloat = useRef<SVGGElement>(null);
   const graphInner = useRef<SVGGElement>(null); const routeRefs = useRef<SVGPathElement[]>([]); const rails = useRef<Record<string, HTMLDivElement | null>>({}); const reduced = useRef(false);
   const moveCamera = (index: number, branch?: Branch) => { const point = branch ? geometryRef.current.branches[branch.id] : geometryRef.current.nodes[index]; if (graphInner.current) gsap.to(graphInner.current, { attr: { transform: `translate(${760 - point.x} ${450 - point.y})` }, duration: reduced.current ? 0 : .65, ease: "power3.out", overwrite: true }); };
   const graphPoint = (event: ReactPointerEvent<SVGElement>) => {
@@ -84,20 +192,39 @@ export default function Home() {
     if (!matrix) return null;
     return new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
   };
+  const endDrag = useCallback(() => {
+    const current = drag.current;
+    if (!current) return;
+    // Clear first: releasing capture can synchronously dispatch another end event.
+    drag.current = null;
+    if (graphFloat.current) graphFloat.current.style.animationPlayState = "running";
+    if (current.moved) {
+      suppressClick.current = true;
+      window.setTimeout(() => { suppressClick.current = false; }, 0);
+    }
+    if (current.target.hasPointerCapture(current.pointerId)) current.target.releasePointerCapture(current.pointerId);
+  }, []);
   const startDrag = (event: ReactPointerEvent<SVGElement>, kind: 'node' | 'branch' | 'bend', key: string) => {
     if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    // Freeze the ambient motion at its current position, without snapping,
+    // so the grabbed point stays directly under the pointer throughout a drag.
+    if (graphFloat.current) graphFloat.current.style.animationPlayState = "paused";
     const point = graphPoint(event);
-    if (!point) return;
+    if (!point) {
+      if (graphFloat.current) graphFloat.current.style.animationPlayState = "running";
+      return;
+    }
     const current = geometryRef.current;
     const initial = kind === 'node' ? current.nodes[Number(key)] : kind === 'branch' ? current.branches[key] : current.bends[key] ?? { x: 0, y: 0 };
     if (graphInner.current) gsap.killTweensOf(graphInner.current);
-    drag.current = { kind, key, initial: { ...initial }, start: point, startClient: { x: event.clientX, y: event.clientY }, moved: false };
+    drag.current = { kind, key, initial: { ...initial }, start: point, startClient: { x: event.clientX, y: event.clientY }, moved: false, pointerId: event.pointerId, target: event.currentTarget };
     event.currentTarget.setPointerCapture(event.pointerId);
     event.stopPropagation();
   };
   const moveDrag = (event: ReactPointerEvent<SVGElement>) => {
     const current = drag.current;
-    if (!current) return;
+    if (!current || current.pointerId !== event.pointerId) return;
+    if (event.pointerType === 'mouse' && !(event.buttons & 1)) { endDrag(); return; }
     if (!current.moved && Math.hypot(event.clientX - current.startClient.x, event.clientY - current.startClient.y) < 4) return;
     current.moved = true;
     const point = graphPoint(event);
@@ -113,15 +240,25 @@ export default function Home() {
     });
     event.preventDefault();
   };
-  const endDrag = (event: ReactPointerEvent<SVGElement>) => {
-    if (!drag.current) return;
-    if (drag.current.moved) {
-      suppressClick.current = true;
-      window.setTimeout(() => { suppressClick.current = false; }, 0);
-    }
-    drag.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-  };
+  useEffect(() => {
+    const finishPointer = (event: PointerEvent) => {
+      if (event.pointerId === drag.current?.pointerId) endDrag();
+    };
+    const finishHidden = () => { if (document.hidden) endDrag(); };
+    window.addEventListener('pointerup', finishPointer, true);
+    window.addEventListener('pointercancel', finishPointer, true);
+    window.addEventListener('lostpointercapture', finishPointer, true);
+    window.addEventListener('blur', endDrag);
+    document.addEventListener('visibilitychange', finishHidden);
+    return () => {
+      window.removeEventListener('pointerup', finishPointer, true);
+      window.removeEventListener('pointercancel', finishPointer, true);
+      window.removeEventListener('lostpointercapture', finishPointer, true);
+      window.removeEventListener('blur', endDrag);
+      document.removeEventListener('visibilitychange', finishHidden);
+      endDrag();
+    };
+  }, [endDrag]);
   const selectMain = (index: number) => { const sectionId = sections[index].id; selectedRef.current = { ...selectedRef.current, [sectionId]: "" }; setActive(index); setSelected((old) => ({ ...old, [sectionId]: "" })); document.getElementById(sectionId)?.scrollIntoView({ behavior: reduced.current ? "auto" : "smooth", block: "start" }); };
   const selectBranch = (index: number, branch: Branch, navigate = false) => { const section = sections[index]; selectedRef.current = { ...selectedRef.current, [section.id]: branch.id }; setActive(index); setSelected((old) => ({ ...old, [section.id]: branch.id })); if (navigate) document.getElementById(section.id)?.scrollIntoView({ behavior: reduced.current ? "auto" : "smooth", block: "start" }); moveCamera(index, branch); };
   const openResume = () => {
@@ -138,8 +275,12 @@ export default function Home() {
   useEffect(() => {
     gsap.registerPlugin(ScrollTrigger);
     reduced.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let previousScrollY = window.scrollY;
     const updateGraph = (recenter = true) => {
       const scrollY = window.scrollY;
+      // Scrolling takes over navigation even if a drag lost its release event.
+      if (recenter && scrollY !== previousScrollY) endDrag();
+      if (recenter) previousScrollY = scrollY;
       const sectionTops = sections.map((section) => {
         const element = document.getElementById(section.id);
         return element ? element.getBoundingClientRect().top + scrollY : 0;
@@ -167,12 +308,9 @@ export default function Home() {
       routeRefs.current.forEach((edge, index) => {
         const complete = atEnd || index < routeSegment;
         const current = !atEnd && index === routeSegment;
-        // Non-scaling strokes measure dashes in screen pixels, while
-        // getTotalLength() returns SVG units. Mixing them repeats the lit
-        // dash near the next node whenever the responsive SVG is enlarged.
-        const matrix = edge.getScreenCTM();
-        const scale = matrix ? Math.hypot(matrix.a, matrix.b) : 1;
-        const length = edge.getTotalLength() * scale;
+        // Tube walls, connector bores and light all scale in SVG units.
+        // Keep dash distances in those same units to avoid repeated light.
+        const length = edge.getTotalLength();
         const progress = complete ? 1 : current ? routeFraction : 0;
         edge.classList.toggle("is-complete", complete);
         edge.classList.toggle("is-traveling", current);
@@ -181,7 +319,11 @@ export default function Home() {
         edge.style.stroke = "var(--green)";
         edge.style.visibility = progress > 0 ? "visible" : "hidden";
       });
-      if (recenter && !drag.current) graphInner.current?.setAttribute("transform", `translate(${760 - cameraPoint.x} ${450 - cameraPoint.y})`);
+      if (recenter && !drag.current && graphInner.current) {
+        // A branch-focus tween must not overwrite the scroll camera afterward.
+        gsap.killTweensOf(graphInner.current);
+        graphInner.current.setAttribute("transform", `translate(${760 - cameraPoint.x} ${450 - cameraPoint.y})`);
+      }
     };
     refreshGeometry.current = () => updateGraph(false);
     const ctx = gsap.context(() => {
@@ -189,14 +331,47 @@ export default function Home() {
     });
     updateGraph();
     return () => { refreshGeometry.current = null; ctx.revert(); };
-  }, []);
+  }, [endDrag]);
   useLayoutEffect(() => { refreshGeometry.current?.(); }, [geometry]);
   const syncRail = (index: number) => { const section = sections[index]; const rail = rails.current[section.id]; if (!rail) return; const buttons = Array.from(rail.querySelectorAll<HTMLButtonElement>("[data-branch]")); if (!buttons.length) return; const middle = rail.scrollLeft + rail.clientWidth / 2; const closest = buttons.reduce((winner, button) => Math.abs(button.offsetLeft + button.offsetWidth / 2 - middle) < Math.abs(winner.offsetLeft + winner.offsetWidth / 2 - middle) ? button : winner, buttons[0]); const branch = section.branches.find((item) => item.id === closest.dataset.branch); if (branch && selectedRef.current[section.id] !== branch.id) selectBranch(index, branch); };
-  const graph = useMemo(() => <svg className="topology" viewBox="0 0 1200 900" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Interactive portfolio topology graph"><g ref={graphInner}>
-    {sections.slice(0, -1).map((section, index) => { const a = geometry.nodes[index]; const b = geometry.nodes[index + 1]; const dx = b.x - a.x; const dy = b.y - a.y; const bend = geometry.bends[`route-${index}`] ?? { x: 0, y: 0 }; const d = `M ${a.x} ${a.y} C ${a.x + dx * .42 + bend.x * 4 / 3} ${a.y + dy * .48 + bend.y * 4 / 3}, ${b.x - dx * .42 + bend.x * 4 / 3} ${b.y - dy * .48 + bend.y * 4 / 3}, ${b.x} ${b.y}`; return <g key={section.id}><path d={d} className="route-underlay" /><path ref={(element) => { if (element) routeRefs.current[index] = element; }} d={d} className="route-edge" /><path d={d} className="graph-edge-hit" aria-label={`Drag route from ${section.id} to ${sections[index + 1].id}`} onPointerDown={(event) => startDrag(event, 'bend', `route-${index}`)} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} /></g>; })}
-    {sections.flatMap((section, index) => section.branches.map((branch, branchIndex) => { const parent = geometry.nodes[index]; const offset = branchOffsets[section.id]?.[branchIndex] ?? { x: 0, y: 100, side: branch.side }; const point = geometry.branches[branch.id]; const chosen = index === active && selected[section.id] === branch.id; const outward = offset.side === "left" ? -1 : 1; const labelX = point.x + outward * 31; const bend = geometry.bends[`branch-${branch.id}`] ?? { x: 0, y: 0 }; const d = `M ${parent.x} ${parent.y} C ${parent.x + (point.x - parent.x) * .35 + bend.x * 4 / 3} ${parent.y + (point.y - parent.y) * .15 + bend.y * 4 / 3}, ${point.x - outward * 60 + bend.x * 4 / 3} ${point.y + bend.y * 4 / 3}, ${point.x - outward * 20} ${point.y}`; return <g key={branch.id}><path d={d} className={`branch-edge ${chosen ? "is-selected" : ""}`} /><path d={d} className="graph-edge-hit" aria-label={`Drag ${branch.label} branch edge`} onPointerDown={(event) => startDrag(event, 'bend', `branch-${branch.id}`)} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} /><g className={`graph-node branch-node ${chosen ? "is-selected" : ""}`} tabIndex={0} role="button" aria-label={`Open ${branch.label} details`} onPointerDown={(event) => startDrag(event, 'branch', branch.id)} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} onClick={() => { if (!suppressClick.current) selectBranch(index, branch, true); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectBranch(index, branch, true); } }}><circle cx={point.x} cy={point.y} r="20" /><circle className="core" cx={point.x} cy={point.y} r="3" /><text className="branch-label" x={labelX} y={point.y + 4} textAnchor={offset.side === "left" ? "end" : "start"}>{branch.label}</text></g></g>; }))}
-    {sections.map((section, index) => { const point = geometry.nodes[index]; return <g key={section.id} className={`graph-node main-node ${index === active ? "is-active" : ""}`} tabIndex={0} role="button" aria-label={`Navigate to ${section.id}`} onPointerDown={(event) => startDrag(event, 'node', String(index))} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} onClick={() => { if (!suppressClick.current) selectMain(index); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectMain(index); } }}><circle cx={point.x} cy={point.y} r="24" /><circle cx={point.x} cy={point.y} r="17" className="inner" /><circle className="core" cx={point.x} cy={point.y} r="4" /><text className="main-label" x={point.x + 36} y={point.y + 4} textAnchor="start">{section.id.toUpperCase()}</text></g>; })}
-  </g></svg>, [selected, active, geometry]);
+  const graph = useMemo(() => <svg className="topology" viewBox="0 0 1200 900" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Interactive portfolio topology graph">
+    <defs>
+      <linearGradient id="cable-collar" gradientUnits="userSpaceOnUse" x1="0" y1="-6.6" x2="0" y2="6.6">
+        <stop offset="0" stopColor="#304839" /><stop offset=".25" stopColor="#d8e4d9" /><stop offset=".44" stopColor="#849c89" /><stop offset=".7" stopColor="#304d3a" /><stop offset="1" stopColor="#09190f" />
+      </linearGradient>
+      <linearGradient id="node-metal-side" x1="0%" y1="0%" x2="100%" y2="15%">
+        <stop offset="0" stopColor="#111a16" /><stop offset=".09" stopColor="#718076" /><stop offset=".18" stopColor="#303b34" /><stop offset=".42" stopColor="#0c1410" /><stop offset=".72" stopColor="#18251c" /><stop offset="1" stopColor="#030805" />
+      </linearGradient>
+      <linearGradient id="node-metal-top" x1="15%" y1="0%" x2="75%" y2="100%">
+        <stop offset="0" stopColor="#e0e9e0" /><stop offset=".17" stopColor="#859b8b" /><stop offset=".32" stopColor="#263e30" /><stop offset=".55" stopColor="#15271d" /><stop offset=".76" stopColor="#9daf9f" /><stop offset="1" stopColor="#3c5343" />
+      </linearGradient>
+      <linearGradient id="node-bezel-inset" x1="0%" y1="0%" x2="70%" y2="100%">
+        <stop offset="0" stopColor="#020805" /><stop offset=".5" stopColor="#10231a" /><stop offset="1" stopColor="#7e9e89" />
+      </linearGradient>
+      <radialGradient id="node-glass" cx="36%" cy="25%" r="78%">
+        <stop offset="0" stopColor="#3a5c49" /><stop offset=".4" stopColor="#152d20" /><stop offset=".75" stopColor="#06150d" /><stop offset="1" stopColor="#010805" />
+      </radialGradient>
+      <radialGradient id="node-glass-lit" cx="48%" cy="48%" r="65%">
+        <stop offset="0" stopColor="#2f9d66" /><stop offset=".26" stopColor="#165236" /><stop offset=".65" stopColor="#0a2b1b" /><stop offset="1" stopColor="#010a05" />
+      </radialGradient>
+      <radialGradient id="node-aura">
+        <stop offset="0" stopColor="var(--green)" stopOpacity=".9" /><stop offset=".4" stopColor="var(--green)" stopOpacity=".28" /><stop offset="1" stopColor="var(--green)" stopOpacity="0" />
+      </radialGradient>
+      <radialGradient id="node-shadow">
+        <stop offset=".25" stopColor="#000" stopOpacity=".9" /><stop offset="1" stopColor="#000" stopOpacity="0" />
+      </radialGradient>
+      <radialGradient id="node-core" cx="30%" cy="22%" r="75%">
+        <stop offset="0" stopColor="#f1fff6" /><stop offset=".4" stopColor="#b8ccc0" /><stop offset="1" stopColor="#536c5d" />
+      </radialGradient>
+      <radialGradient id="node-core-lit" cx="30%" cy="22%" r="75%">
+        <stop offset="0" stopColor="#e0ffec" /><stop offset=".35" stopColor="var(--green)" /><stop offset="1" stopColor="#16814a" />
+      </radialGradient>
+    </defs>
+    <g className="graph-placement"><g ref={graphFloat} className="graph-float"><g ref={graphInner} className="graph-camera">
+    {sections.slice(0, -1).map((section, index) => { const a = geometry.nodes[index]; const b = geometry.nodes[index + 1]; const dx = b.x - a.x; const dy = b.y - a.y; const bend = geometry.bends[`route-${index}`] ?? { x: 0, y: 0 }; const c1 = { x: a.x + dx * .42 + bend.x * 4 / 3, y: a.y + dy * .48 + bend.y * 4 / 3 }; const c2 = { x: b.x - dx * .42 + bend.x * 4 / 3, y: b.y - dy * .48 + bend.y * 4 / 3 }; const d = `M ${a.x} ${a.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${b.x} ${b.y}`; return <g key={section.id}><GraphCableBody d={d} points={[a, c1, c2, b]} main routeRef={(element) => { if (element) routeRefs.current[index] = element; }} /><path d={d} className="graph-edge-hit" aria-label={`Drag route from ${section.id} to ${sections[index + 1].id}`} onPointerDown={(event) => startDrag(event, 'bend', `route-${index}`)} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} /></g>; })}
+    {sections.flatMap((section, index) => section.branches.map((branch, branchIndex) => { const parent = geometry.nodes[index]; const offset = branchOffsets[section.id]?.[branchIndex] ?? { x: 0, y: 100, side: branch.side }; const point = geometry.branches[branch.id]; const chosen = index === active && selected[section.id] === branch.id; const outward = offset.side === "left" ? -1 : 1; const labelX = point.x + outward * 40; const bend = geometry.bends[`branch-${branch.id}`] ?? { x: 0, y: 0 }; const c1 = { x: parent.x + (point.x - parent.x) * .35 + bend.x * 4 / 3, y: parent.y + (point.y - parent.y) * .15 + bend.y * 4 / 3 }; const c2 = { x: point.x - outward * 60 + bend.x * 4 / 3, y: point.y + bend.y * 4 / 3 }; const end = { x: point.x - outward * 20, y: point.y }; const d = `M ${parent.x} ${parent.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${end.x} ${end.y}`; return <g key={branch.id}><GraphCableBody d={d} points={[parent, c1, c2, end]} endNode={point} selected={chosen} /><path d={d} className="graph-edge-hit" aria-label={`Drag ${branch.label} branch edge`} onPointerDown={(event) => startDrag(event, 'bend', `branch-${branch.id}`)} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} /><g className={`graph-node branch-node ${chosen ? "is-selected" : ""}`} tabIndex={0} role="button" aria-label={`Open ${branch.label} details`} onPointerDown={(event) => startDrag(event, 'branch', branch.id)} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} onClick={() => { if (!suppressClick.current) selectBranch(index, branch, true); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectBranch(index, branch, true); } }}><GraphNodeBody point={point} /><text className="branch-label" x={labelX} y={point.y + 4} textAnchor={offset.side === "left" ? "end" : "start"}>{branch.label}</text></g></g>; }))}
+    {sections.map((section, index) => { const point = geometry.nodes[index]; return <g key={section.id} className={`graph-node main-node ${index === active ? "is-active" : ""}`} tabIndex={0} role="button" aria-label={`Navigate to ${section.id}`} onPointerDown={(event) => startDrag(event, 'node', String(index))} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} onClick={() => { if (!suppressClick.current) selectMain(index); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectMain(index); } }}><GraphNodeBody point={point} main /><text className="main-label" x={point.x + 50} y={point.y + 4} textAnchor="start">{section.id.toUpperCase()}</text></g>; })}
+  </g></g></g></svg>, [selected, active, geometry]);
   return (
     <main id="route">
       <div className="scan-grid" aria-hidden="true" />
